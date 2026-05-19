@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "s3upload"
+version = "0.1.0"
+description = "Upload files to AWS S3"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3",
+    "click",
+    "textual",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "textual-dev",
+]
+
+[project.scripts]
+s3upload = "s3upload.cli:main"
