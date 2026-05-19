@@ -1,198 +1,104 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import boto3
-from textual import work
-from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, DirectoryTree, Header, Input, Label, Select
 
 
-class FilePickerModal(ModalScreen[str | None]):
-    CSS = """
-    FilePickerModal {
-        align: center middle;
-    }
-
-    #picker-dialog {
-        padding: 1 2;
-        background: $surface;
-        border: solid $primary;
-        width: 72;
-        height: 32;
-    }
-
-    #picker-title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #file-tree {
-        height: 1fr;
-        border: solid $primary-darken-2;
-        margin-bottom: 1;
-    }
-
-    #selected-path {
-        margin-bottom: 1;
-        color: $text-muted;
-    }
-
-    #picker-buttons {
-        height: auto;
-    }
-
-    #select-btn {
-        margin-right: 1;
-    }
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._selected: Optional[str] = None
-
-    def compose(self) -> ComposeResult:
-        with Container(id="picker-dialog"):
-            yield Label("Select a file to upload", id="picker-title")
-            yield DirectoryTree(str(Path.home()), id="file-tree")
-            yield Label("No file selected", id="selected-path")
-            with Horizontal(id="picker-buttons"):
-                yield Button("Select", id="select-btn", variant="primary", disabled=True)
-                yield Button("Cancel", id="cancel-btn")
-
-    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        self._selected = str(event.path)
-        self.query_one("#selected-path", Label).update(self._selected)
-        self.query_one("#select-btn", Button).disabled = False
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel-btn":
-            self.dismiss(None)
-        elif event.button.id == "select-btn":
-            self.dismiss(self._selected)
-
-
-class S3UploadApp(App):
-    TITLE = "S3Upload"
-    CSS = """
-    Screen {
-        background: $surface-darken-1;
-    }
-
-    #main {
-        padding: 1 2;
-        height: 1fr;
-    }
-
-    #credentials-row {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #profile-col {
-        width: 1fr;
-        padding-right: 2;
-        height: auto;
-    }
-
-    #region-col {
-        width: 1fr;
-        height: auto;
-    }
-
-    .field-label {
-        text-style: bold;
-    }
-
-    #bucket-row {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #bucket-select {
-        width: 36;
-    }
-
-    #refresh-btn {
-        margin-top: 1;
-        width: auto;
-    }
-
-    #contents-label {
-        text-style: bold;
-        margin-top: 1;
-    }
-
-    #contents-table {
-        height: 1fr;
-    }
-
-    #action-row {
-        height: auto;
-        margin-top: 1;
-        align: left middle;
-    }
-
-    #upload-btn {
-        width: auto;
-        margin-right: 1;
-    }
-
-    #close-btn {
-        width: auto;
-        dock: right;
-    }
-    """
-
+class S3UploadApp(tk.Tk):
     def __init__(self, profile: Optional[str] = None, region: str = "ca-central-1") -> None:
         super().__init__()
-        self._initial_profile = profile or ""
-        self._initial_region = region
+        self.title("S3Upload")
+        self.minsize(600, 480)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
         self._session: Optional[boto3.Session] = None
         self._current_bucket: Optional[str] = None
 
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with Container(id="main"):
-            with Horizontal(id="credentials-row"):
-                with Vertical(id="profile-col"):
-                    yield Label("AWS Profile", classes="field-label")
-                    yield Input(
-                        placeholder="Profile",
-                        value=self._initial_profile,
-                        id="profile-input",
-                    )
-                with Vertical(id="region-col"):
-                    yield Label("Region", classes="field-label")
-                    yield Input(
-                        placeholder="ca-central-1",
-                        value=self._initial_region,
-                        id="region-input",
-                    )
-            with Vertical(id="bucket-row"):
-                yield Label("S3 Bucket", classes="field-label")
-                yield Select([], prompt="Select", id="bucket-select")
-                yield Button("Refresh", id="refresh-btn", variant="default")
-            yield Label("Bucket Contents", id="contents-label")
-            yield DataTable(id="contents-table", cursor_type="row")
-            with Horizontal(id="action-row"):
-                yield Button("Upload", id="upload-btn", variant="primary")
-                yield Button("Close", id="close-btn", variant="error")
-
-    def on_mount(self) -> None:
-        self.query_one("#contents-table", DataTable).add_columns("Name", "Size")
+        self._build_ui(profile or "", region)
         self._refresh_buckets()
 
-    def _refresh_buckets(self) -> None:
-        profile = self.query_one("#profile-input", Input).value.strip() or None
-        region = self.query_one("#region-input", Input).value.strip() or "ca-central-1"
-        self._fetch_buckets(profile, region)
+    def run(self) -> None:
+        self.mainloop()
 
-    @work(thread=True)
+    def _build_ui(self, profile: str, region: str) -> None:
+        main = ttk.Frame(self, padding=10)
+        main.grid(sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(5, weight=1)
+
+        # Profile / Region
+        ttk.Label(main, text="AWS Profile", font=("", 10, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(main, text="Region", font=("", 10, "bold")).grid(
+            row=0, column=1, sticky="w"
+        )
+        self._profile_var = tk.StringVar(value=profile)
+        ttk.Entry(main, textvariable=self._profile_var).grid(
+            row=1, column=0, sticky="ew", padx=(0, 8)
+        )
+        self._region_var = tk.StringVar(value=region)
+        ttk.Entry(main, textvariable=self._region_var).grid(
+            row=1, column=1, sticky="ew"
+        )
+
+        # S3 Bucket
+        ttk.Label(main, text="S3 Bucket", font=("", 10, "bold")).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0)
+        )
+        bucket_frame = ttk.Frame(main)
+        bucket_frame.grid(row=3, column=0, columnspan=2, sticky="w")
+        self._bucket_var = tk.StringVar()
+        self._bucket_combo = ttk.Combobox(
+            bucket_frame, textvariable=self._bucket_var, state="readonly", width=42
+        )
+        self._bucket_combo.pack(side="left")
+        self._bucket_combo.bind("<<ComboboxSelected>>", self._on_bucket_selected)
+        ttk.Button(bucket_frame, text="Refresh", command=self._refresh_buckets).pack(
+            side="left", padx=(6, 0)
+        )
+
+        # Bucket Contents
+        ttk.Label(main, text="Bucket Contents", font=("", 10, "bold")).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(10, 0)
+        )
+        table_frame = ttk.Frame(main)
+        table_frame.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        self._table = ttk.Treeview(
+            table_frame, columns=("name", "size"), show="headings", selectmode="browse"
+        )
+        self._table.heading("name", text="Name")
+        self._table.heading("size", text="Size")
+        self._table.column("name", stretch=True)
+        self._table.column("size", width=100, stretch=False)
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self._table.yview)
+        self._table.configure(yscrollcommand=scrollbar.set)
+        self._table.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Action buttons
+        btn_frame = ttk.Frame(main)
+        btn_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(btn_frame, text="Upload", command=self._on_upload).pack(side="left")
+        ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side="right")
+
+    def _refresh_buckets(self) -> None:
+        profile = self._profile_var.get().strip() or None
+        region = self._region_var.get().strip() or "ca-central-1"
+        threading.Thread(
+            target=self._fetch_buckets, args=(profile, region), daemon=True
+        ).start()
+
     def _fetch_buckets(self, profile: Optional[str], region: str) -> None:
         from .s3 import get_session, list_buckets
 
@@ -200,67 +106,63 @@ class S3UploadApp(App):
             session = get_session(profile=profile, region=region)
             self._session = session
             buckets = list_buckets(session)
-            self.call_from_thread(self._update_bucket_select, buckets)
+            self.after(0, self._update_bucket_combo, buckets)
         except Exception as e:
-            self.call_from_thread(self.notify, f"AWS error: {e}", severity="error")
+            self.after(0, messagebox.showerror, "AWS Error", str(e))
 
-    def _update_bucket_select(self, buckets: list[str]) -> None:
-        self.query_one("#bucket-select", Select).set_options((b, b) for b in buckets)
+    def _update_bucket_combo(self, buckets: list[str]) -> None:
+        self._bucket_combo["values"] = buckets
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "bucket-select" and event.value is not Select.BLANK:
-            self._current_bucket = str(event.value)
-            self._fetch_objects(self._current_bucket)
+    def _on_bucket_selected(self, event: object = None) -> None:
+        bucket = self._bucket_var.get()
+        if bucket:
+            self._current_bucket = bucket
+            threading.Thread(
+                target=self._fetch_objects, args=(bucket,), daemon=True
+            ).start()
 
-    @work(thread=True)
     def _fetch_objects(self, bucket: str) -> None:
         from .s3 import list_objects
 
         try:
             objects = list_objects(self._session, bucket)
-            self.call_from_thread(self._update_contents_table, objects)
+            self.after(0, self._update_table, objects)
         except Exception as e:
-            self.call_from_thread(self.notify, f"AWS error: {e}", severity="error")
+            self.after(0, messagebox.showerror, "AWS Error", str(e))
 
-    def _update_contents_table(self, objects: list[dict]) -> None:
-        table = self.query_one("#contents-table", DataTable)
-        table.clear()
+    def _update_table(self, objects: list[dict]) -> None:
+        self._table.delete(*self._table.get_children())
         for obj in objects:
-            table.add_row(obj["key"], _format_size(obj["size"]))
+            self._table.insert("", "end", values=(obj["key"], _format_size(obj["size"])))
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id in ("profile-input", "region-input"):
-            self._refresh_buckets()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "refresh-btn":
-            self._refresh_buckets()
-            return
-        if event.button.id == "close-btn":
-            self.exit()
-            return
-        if event.button.id != "upload-btn":
-            return
+    def _on_upload(self) -> None:
         if not self._session:
-            self.notify("Not connected to AWS", severity="warning")
+            messagebox.showwarning("Not Connected", "Not connected to AWS.")
             return
         if not self._current_bucket:
-            self.notify("Please select a bucket first", severity="warning")
+            messagebox.showwarning("No Bucket Selected", "Please select a bucket first.")
             return
-        bucket = self._current_bucket
-        self.push_screen(FilePickerModal(), callback=lambda path: self._upload_file(path, bucket) if path else None)
+        path = filedialog.askopenfilename(title="Select file to upload")
+        if path:
+            threading.Thread(
+                target=self._upload_file, args=(path, self._current_bucket), daemon=True
+            ).start()
 
-    @work(thread=True)
     def _upload_file(self, file_path: str, bucket: str) -> None:
         from .s3 import upload_file
 
         try:
             upload_file(self._session, bucket, file_path)
             name = os.path.basename(file_path)
-            self.call_from_thread(self.notify, f"Uploaded {name!r} successfully")
-            self.call_from_thread(self._fetch_objects, bucket)
+            self.after(0, messagebox.showinfo, "Success", f"Uploaded {name!r} successfully.")
+            self.after(
+                0,
+                lambda: threading.Thread(
+                    target=self._fetch_objects, args=(bucket,), daemon=True
+                ).start(),
+            )
         except Exception as e:
-            self.call_from_thread(self.notify, f"Upload failed: {e}", severity="error")
+            self.after(0, messagebox.showerror, "Upload Failed", str(e))
 
 
 def _format_size(size: int) -> str:

@@ -10,14 +10,12 @@ requires-python = ">=3.11"
 dependencies = [
     "boto3",
     "click",
-    "textual",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "ruff",
-    "textual-dev",
 ]
 
 [project.scripts]
