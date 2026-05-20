@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -19,6 +20,9 @@ class S3UploadApp(tk.Tk):
 
         self._session: Optional[boto3.Session] = None
         self._current_bucket: Optional[str] = None
+        self._pasted_access_key: Optional[str] = None
+        self._pasted_secret_key: Optional[str] = None
+        self._pasted_session_token: Optional[str] = None
 
         self._build_ui(profile or "", region)
         self._refresh_buckets()
@@ -30,31 +34,35 @@ class S3UploadApp(tk.Tk):
         main = ttk.Frame(self, padding=10)
         main.grid(sticky="nsew")
         main.columnconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
+        main.columnconfigure(1, weight=0)
+        main.columnconfigure(2, weight=1)
         main.rowconfigure(5, weight=1)
 
-        # Profile / Region
+        # Profile / Paste Credentials / Region
         ttk.Label(main, text="AWS Profile", font=("", 10, "bold")).grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(main, text="Region", font=("", 10, "bold")).grid(
-            row=0, column=1, sticky="w"
+            row=0, column=2, sticky="w"
         )
         self._profile_var = tk.StringVar(value=profile)
         ttk.Entry(main, textvariable=self._profile_var).grid(
-            row=1, column=0, sticky="ew", padx=(0, 8)
+            row=1, column=0, sticky="ew", padx=(0, 6)
+        )
+        ttk.Button(main, text="Paste Credentials", command=self._open_paste_dialog).grid(
+            row=1, column=1, padx=6
         )
         self._region_var = tk.StringVar(value=region)
         ttk.Entry(main, textvariable=self._region_var).grid(
-            row=1, column=1, sticky="ew"
+            row=1, column=2, sticky="ew", padx=(6, 0)
         )
 
         # S3 Bucket
         ttk.Label(main, text="S3 Bucket", font=("", 10, "bold")).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0)
+            row=2, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         bucket_frame = ttk.Frame(main)
-        bucket_frame.grid(row=3, column=0, columnspan=2, sticky="w")
+        bucket_frame.grid(row=3, column=0, columnspan=3, sticky="w")
         self._bucket_var = tk.StringVar()
         self._bucket_combo = ttk.Combobox(
             bucket_frame, textvariable=self._bucket_var, state="readonly", width=42
@@ -67,10 +75,10 @@ class S3UploadApp(tk.Tk):
 
         # Bucket Contents
         ttk.Label(main, text="Bucket Contents", font=("", 10, "bold")).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(10, 0)
+            row=4, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         table_frame = ttk.Frame(main)
-        table_frame.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
+        table_frame.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
@@ -88,9 +96,45 @@ class S3UploadApp(tk.Tk):
 
         # Action buttons
         btn_frame = ttk.Frame(main)
-        btn_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        btn_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ttk.Button(btn_frame, text="Upload", command=self._on_upload).pack(side="left")
         ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side="right")
+
+    def _open_paste_dialog(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Paste AWS Credentials")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Paste your AWS temporary credentials below:").pack(anchor="w")
+        text = tk.Text(frame, width=70, height=6, wrap="none", font=("Courier", 10))
+        text.pack(fill="both", expand=True, pady=(4, 8))
+        text.focus_set()
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x")
+
+        def apply() -> None:
+            creds = _parse_credentials(text.get("1.0", "end"))
+            if not creds.get("AWS_ACCESS_KEY_ID") or not creds.get("AWS_SECRET_ACCESS_KEY"):
+                messagebox.showwarning(
+                    "Invalid Credentials",
+                    "Could not find AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in pasted text.",
+                    parent=dialog,
+                )
+                return
+            self._pasted_access_key = creds["AWS_ACCESS_KEY_ID"]
+            self._pasted_secret_key = creds["AWS_SECRET_ACCESS_KEY"]
+            self._pasted_session_token = creds.get("AWS_SESSION_TOKEN")
+            dialog.destroy()
+            self._refresh_buckets()
+
+        ttk.Button(btn_frame, text="Apply", command=apply).pack(side="left")
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=(6, 0))
 
     def _refresh_buckets(self) -> None:
         profile = self._profile_var.get().strip() or None
@@ -103,7 +147,13 @@ class S3UploadApp(tk.Tk):
         from .s3 import get_session, list_buckets
 
         try:
-            session = get_session(profile=profile, region=region)
+            session = get_session(
+                profile=profile,
+                region=region,
+                access_key=self._pasted_access_key,
+                secret_key=self._pasted_secret_key,
+                session_token=self._pasted_session_token,
+            )
             self._session = session
             buckets = list_buckets(session)
             self.after(0, self._update_bucket_combo, buckets)
@@ -163,6 +213,15 @@ class S3UploadApp(tk.Tk):
             )
         except Exception as e:
             self.after(0, messagebox.showerror, "Upload Failed", str(e))
+
+
+def _parse_credentials(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        match = re.search(rf'{key}\s*=\s*"?([^\s"]+)"?', text)
+        if match:
+            result[key] = match.group(1)
+    return result
 
 
 def _format_size(size: int) -> str:

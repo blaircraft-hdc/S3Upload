@@ -4,16 +4,30 @@ from typing import Optional
 import boto3
 
 
-def get_session(profile: Optional[str] = None, region: str = "ca-central-1") -> boto3.Session:
-    if profile:
-        return boto3.Session(profile_name=profile, region_name=region)
-
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+def get_session(
+    profile: Optional[str] = None,
+    region: str = "ca-central-1",
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    session_token: Optional[str] = None,
+) -> boto3.Session:
     if access_key and secret_key:
         return boto3.Session(
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
+            region_name=region,
+        )
+
+    if profile:
+        return boto3.Session(profile_name=profile, region_name=region)
+
+    env_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+    env_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if env_access_key and env_secret_key:
+        return boto3.Session(
+            aws_access_key_id=env_access_key,
+            aws_secret_access_key=env_secret_key,
             aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
             region_name=region,
         )
