@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -16,6 +19,7 @@ class S3UploadApp(tk.Tk):
         profile: Optional[str] = None,
         region: str = "ca-central-1",
         bucket: Optional[str] = None,
+        confirm_delete: bool = True,
     ) -> None:
         super().__init__()
         self.title("S3Upload")
@@ -26,6 +30,7 @@ class S3UploadApp(tk.Tk):
         self._session: Optional[boto3.Session] = None
         self._current_bucket: Optional[str] = None
         self._initial_bucket: Optional[str] = bucket
+        self._confirm_delete: bool = confirm_delete
         self._pasted_access_key: Optional[str] = None
         self._pasted_secret_key: Optional[str] = None
         self._pasted_session_token: Optional[str] = None
@@ -89,7 +94,7 @@ class S3UploadApp(tk.Tk):
         table_frame.rowconfigure(0, weight=1)
 
         self._table = ttk.Treeview(
-            table_frame, columns=("name", "size"), show="headings", selectmode="browse"
+            table_frame, columns=("name", "size"), show="headings", selectmode="extended"
         )
         self._table.heading("name", text="Name")
         self._table.heading("size", text="Size")
@@ -99,6 +104,8 @@ class S3UploadApp(tk.Tk):
         self._table.configure(yscrollcommand=scrollbar.set)
         self._table.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
+        self._table.bind("<Button-2>", self._show_context_menu)
+        self._table.bind("<Button-3>", self._show_context_menu)
 
         # Action buttons
         btn_frame = ttk.Frame(main)
@@ -195,6 +202,98 @@ class S3UploadApp(tk.Tk):
         for obj in objects:
             self._table.insert("", "end", values=(obj["key"], _format_size(obj["size"])))
 
+    def _show_context_menu(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        row = self._table.identify_row(event.y)
+        if not row:
+            return
+        if row not in self._table.selection():
+            self._table.selection_set(row)
+        keys = self._selected_keys()
+        multi = len(keys) > 1
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Delete", command=self._ctx_delete)
+        menu.add_command(
+            label="View", command=self._ctx_view, state="disabled" if multi else "normal"
+        )
+        menu.add_command(
+            label="Edit", command=self._ctx_edit, state="disabled" if multi else "normal"
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _selected_keys(self) -> list[str]:
+        return [str(self._table.item(row, "values")[0]) for row in self._table.selection()]
+
+    def _selected_key(self) -> Optional[str]:
+        keys = self._selected_keys()
+        return keys[0] if keys else None
+
+    def _ctx_delete(self) -> None:
+        keys = self._selected_keys()
+        if not keys or not self._current_bucket:
+            return
+        if self._confirm_delete:
+            if len(keys) == 1:
+                prompt = f"Delete {keys[0]!r} from {self._current_bucket!r}?"
+            else:
+                prompt = f"Delete {len(keys)} objects from {self._current_bucket!r}?"
+            if not messagebox.askyesno("Delete", prompt):
+                return
+        threading.Thread(target=self._delete_objects, args=(keys,), daemon=True).start()
+
+    def _delete_objects(self, keys: list[str]) -> None:
+        from .s3 import delete_object
+
+        failed: list[tuple[str, str]] = []
+        for key in keys:
+            try:
+                delete_object(self._session, self._current_bucket, key)  # type: ignore[arg-type]
+            except Exception as e:
+                failed.append((key, str(e)))
+
+        def _done() -> None:
+            if failed:
+                errors = "\n".join(f"{k}: {e}" for k, e in failed)
+                messagebox.showwarning(
+                    "Delete Partial",
+                    f"Deleted {len(keys) - len(failed)} of {len(keys)} object(s).\n\nFailed:\n{errors}",
+                )
+            threading.Thread(
+                target=self._fetch_objects, args=(self._current_bucket,), daemon=True
+            ).start()
+
+        self.after(0, _done)
+
+    def _ctx_view(self) -> None:
+        key = self._selected_key()
+        if key:
+            threading.Thread(target=self._open_object, args=(key, False), daemon=True).start()
+
+    def _ctx_edit(self) -> None:
+        key = self._selected_key()
+        if key:
+            threading.Thread(target=self._open_object, args=(key, True), daemon=True).start()
+
+    def _open_object(self, key: str, edit: bool) -> None:
+        from .s3 import download_file
+
+        try:
+            path = download_file(self._session, self._current_bucket, key)  # type: ignore[arg-type]
+        except Exception as e:
+            self.after(0, messagebox.showerror, "Download Failed", str(e))
+            return
+
+        try:
+            if edit:
+                editor = os.environ.get("EDITOR")
+                if editor:
+                    subprocess.Popen(shlex.split(editor) + [path])
+                else:
+                    _open_default(path)
+            else:
+                _open_default(path)
+        except Exception as e:
+            self.after(0, messagebox.showerror, "Open Failed", str(e))
+
     def _check_ready(self) -> bool:
         if not self._session:
             messagebox.showwarning("Not Connected", "Not connected to AWS.")
@@ -273,6 +372,15 @@ def _parse_credentials(text: str) -> dict[str, str]:
         if match:
             result[key] = match.group(1)
     return result
+
+
+def _open_default(path: str) -> None:
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", path])
+    else:
+        os.startfile(path)  # type: ignore[attr-defined]
 
 
 def _format_size(size: int) -> str:

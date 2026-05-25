@@ -1,4 +1,5 @@
 import os
+import tempfile
 from typing import Optional
 
 import boto3
@@ -58,6 +59,21 @@ def upload_file(
     if key is None:
         key = os.path.basename(file_path)
     s3.upload_file(file_path, bucket, key)
+
+
+def delete_object(session: boto3.Session, bucket: str, key: str) -> None:
+    s3 = session.client("s3")
+    s3.delete_object(Bucket=bucket, Key=key)
+
+
+def download_file(session: boto3.Session, bucket: str, key: str) -> str:
+    """Download an S3 object to a temp file and return its path."""
+    suffix = os.path.splitext(key)[1]
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    s3 = session.client("s3")
+    s3.download_file(bucket, key, path)
+    return path
 
 
 def upload_folder(
