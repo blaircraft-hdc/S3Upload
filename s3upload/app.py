@@ -30,6 +30,8 @@ class S3UploadApp(tk.Tk):
         self._session: Optional[boto3.Session] = None
         self._current_bucket: Optional[str] = None
         self._initial_bucket: Optional[str] = bucket
+        self._current_prefix: str = ""
+        self._row_data: dict[str, dict] = {}
         self._confirm_delete: bool = confirm_delete
         self._pasted_access_key: Optional[str] = None
         self._pasted_secret_key: Optional[str] = None
@@ -88,8 +90,25 @@ class S3UploadApp(tk.Tk):
         ttk.Label(main, text="Bucket Contents", font=("", 10, "bold")).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
-        table_frame = ttk.Frame(main)
-        table_frame.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
+        contents_frame = ttk.Frame(main)
+        contents_frame.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
+        contents_frame.columnconfigure(0, weight=1)
+        contents_frame.rowconfigure(1, weight=1)
+
+        # Path bar
+        path_bar = ttk.Frame(contents_frame)
+        path_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        path_bar.columnconfigure(1, weight=1)
+        self._up_btn = ttk.Button(path_bar, text="↑ Up", command=self._go_up, state="disabled")
+        self._up_btn.grid(row=0, column=0, padx=(0, 6))
+        self._path_var = tk.StringVar(value="/")
+        ttk.Label(path_bar, textvariable=self._path_var, anchor="w").grid(
+            row=0, column=1, sticky="ew"
+        )
+
+        # Table
+        table_frame = ttk.Frame(contents_frame)
+        table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
@@ -104,6 +123,7 @@ class S3UploadApp(tk.Tk):
         self._table.configure(yscrollcommand=scrollbar.set)
         self._table.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
+        self._table.bind("<Double-1>", self._on_row_double_click)
         self._table.bind("<Button-2>", self._show_context_menu)
         self._table.bind("<Button-3>", self._show_context_menu)
 
@@ -184,23 +204,52 @@ class S3UploadApp(tk.Tk):
         bucket = self._bucket_var.get()
         if bucket:
             self._current_bucket = bucket
-            threading.Thread(
-                target=self._fetch_objects, args=(bucket,), daemon=True
-            ).start()
+            self._navigate_to("")
+
+    def _navigate_to(self, prefix: str) -> None:
+        self._current_prefix = prefix
+        self._path_var.set(f"/{prefix}" if prefix else "/")
+        self._up_btn.configure(state="normal" if prefix else "disabled")
+        threading.Thread(
+            target=self._fetch_objects, args=(self._current_bucket,), daemon=True
+        ).start()
+
+    def _go_up(self) -> None:
+        parent = self._current_prefix.rstrip("/").rsplit("/", 1)
+        new_prefix = (parent[0] + "/") if len(parent) > 1 and parent[0] else ""
+        self._navigate_to(new_prefix)
+
+    def _on_row_double_click(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        row = self._table.identify_row(event.y)
+        if row and row in self._row_data and self._row_data[row]["is_folder"]:
+            self._navigate_to(self._row_data[row]["key"])
 
     def _fetch_objects(self, bucket: str) -> None:
-        from .s3 import list_objects
+        from .s3 import list_objects_at_prefix
 
         try:
-            objects = list_objects(self._session, bucket)
-            self.after(0, self._update_table, objects)
+            folders, files = list_objects_at_prefix(self._session, bucket, self._current_prefix)  # type: ignore[arg-type]
+            self.after(0, self._update_table, folders, files)
         except Exception as e:
             self.after(0, messagebox.showerror, "AWS Error", str(e))
 
-    def _update_table(self, objects: list[dict]) -> None:
+    def _update_table(self, folders: list[str], files: list[dict]) -> None:
         self._table.delete(*self._table.get_children())
-        for obj in objects:
-            self._table.insert("", "end", values=(obj["key"], _format_size(obj["size"])))
+        self._row_data.clear()
+        prefix = self._current_prefix
+        if prefix:
+            parts = prefix.rstrip("/").rsplit("/", 1)
+            parent = (parts[0] + "/") if len(parts) > 1 and parts[0] else ""
+            iid = self._table.insert("", "end", values=("..", ""))
+            self._row_data[iid] = {"key": parent, "is_folder": True}
+        for folder_prefix in folders:
+            name = folder_prefix[len(prefix):]
+            iid = self._table.insert("", "end", values=(name, "—"))
+            self._row_data[iid] = {"key": folder_prefix, "is_folder": True}
+        for obj in files:
+            name = obj["key"][len(prefix):]
+            iid = self._table.insert("", "end", values=(name, _format_size(obj["size"])))
+            self._row_data[iid] = {"key": obj["key"], "is_folder": False}
 
     def _show_context_menu(self, event: tk.Event) -> None:  # type: ignore[type-arg]
         row = self._table.identify_row(event.y)
@@ -208,20 +257,29 @@ class S3UploadApp(tk.Tk):
             return
         if row not in self._table.selection():
             self._table.selection_set(row)
-        keys = self._selected_keys()
-        multi = len(keys) > 1
+        is_folder = self._row_data.get(row, {}).get("is_folder", False)
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="Delete", command=self._ctx_delete)
-        menu.add_command(
-            label="View", command=self._ctx_view, state="disabled" if multi else "normal"
-        )
-        menu.add_command(
-            label="Edit", command=self._ctx_edit, state="disabled" if multi else "normal"
-        )
+        if is_folder:
+            folder_key = self._row_data[row]["key"]
+            menu.add_command(label="Open", command=lambda: self._navigate_to(folder_key))
+        else:
+            file_keys = self._selected_keys()
+            multi = len(file_keys) > 1
+            menu.add_command(label="Delete", command=self._ctx_delete)
+            menu.add_command(
+                label="View", command=self._ctx_view, state="disabled" if multi else "normal"
+            )
+            menu.add_command(
+                label="Edit", command=self._ctx_edit, state="disabled" if multi else "normal"
+            )
         menu.tk_popup(event.x_root, event.y_root)
 
     def _selected_keys(self) -> list[str]:
-        return [str(self._table.item(row, "values")[0]) for row in self._table.selection()]
+        return [
+            self._row_data[row]["key"]
+            for row in self._table.selection()
+            if row in self._row_data and not self._row_data[row]["is_folder"]
+        ]
 
     def _selected_key(self) -> Optional[str]:
         keys = self._selected_keys()
@@ -309,7 +367,9 @@ class S3UploadApp(tk.Tk):
         paths = filedialog.askopenfilenames(title="Select files to upload")
         if paths:
             threading.Thread(
-                target=self._upload_files, args=(list(paths), self._current_bucket), daemon=True
+                target=self._upload_files,
+                args=(list(paths), self._current_bucket, self._current_prefix),
+                daemon=True,
             ).start()
 
     def _on_upload_folder(self) -> None:
@@ -318,16 +378,19 @@ class S3UploadApp(tk.Tk):
         folder = filedialog.askdirectory(title="Select folder to upload")
         if folder:
             threading.Thread(
-                target=self._upload_folder_task, args=(folder, self._current_bucket), daemon=True
+                target=self._upload_folder_task,
+                args=(folder, self._current_bucket, self._current_prefix),
+                daemon=True,
             ).start()
 
-    def _upload_files(self, file_paths: list[str], bucket: str) -> None:
+    def _upload_files(self, file_paths: list[str], bucket: str, prefix: str) -> None:
         from .s3 import upload_file
 
         failed: list[tuple[str, str]] = []
         for path in file_paths:
+            key = prefix + os.path.basename(path)
             try:
-                upload_file(self._session, bucket, path)  # type: ignore[arg-type]
+                upload_file(self._session, bucket, path, key=key)  # type: ignore[arg-type]
             except Exception as e:
                 failed.append((os.path.basename(path), str(e)))
 
@@ -346,10 +409,10 @@ class S3UploadApp(tk.Tk):
 
         self.after(0, _done)
 
-    def _upload_folder_task(self, folder_path: str, bucket: str) -> None:
+    def _upload_folder_task(self, folder_path: str, bucket: str, prefix: str) -> None:
         from .s3 import upload_folder
 
-        succeeded, failed = upload_folder(self._session, bucket, folder_path)  # type: ignore[arg-type]
+        succeeded, failed = upload_folder(self._session, bucket, folder_path, key_prefix=prefix)  # type: ignore[arg-type]
 
         def _done() -> None:
             if failed:

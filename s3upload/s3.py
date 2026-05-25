@@ -42,6 +42,23 @@ def list_buckets(session: boto3.Session) -> list[str]:
     return [b["Name"] for b in response.get("Buckets", [])]
 
 
+def list_objects_at_prefix(
+    session: boto3.Session, bucket: str, prefix: str = ""
+) -> tuple[list[str], list[dict]]:
+    """List one level of a bucket, returning (folder_prefixes, file_objects)."""
+    s3 = session.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    folders: list[str] = []
+    files: list[dict] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []):
+            folders.append(cp["Prefix"])
+        for obj in page.get("Contents", []):
+            if obj["Key"] != prefix:  # skip folder placeholder objects
+                files.append({"key": obj["Key"], "size": obj["Size"]})
+    return folders, files
+
+
 def list_objects(session: boto3.Session, bucket: str) -> list[dict]:
     s3 = session.client("s3")
     paginator = s3.get_paginator("list_objects_v2")
@@ -77,7 +94,7 @@ def download_file(session: boto3.Session, bucket: str, key: str) -> str:
 
 
 def upload_folder(
-    session: boto3.Session, bucket: str, folder_path: str
+    session: boto3.Session, bucket: str, folder_path: str, key_prefix: str = ""
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Upload all files under folder_path, preserving relative paths as S3 keys.
 
@@ -90,7 +107,7 @@ def upload_folder(
         for filename in filenames:
             abs_path = os.path.join(dirpath, filename)
             rel_path = os.path.relpath(abs_path, os.path.dirname(folder_path))
-            key = rel_path.replace(os.sep, "/")
+            key = key_prefix + rel_path.replace(os.sep, "/")
             try:
                 s3.upload_file(abs_path, bucket, key)
                 succeeded.append(key)
