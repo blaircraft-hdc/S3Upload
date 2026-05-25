@@ -58,3 +58,26 @@ def upload_file(
     if key is None:
         key = os.path.basename(file_path)
     s3.upload_file(file_path, bucket, key)
+
+
+def upload_folder(
+    session: boto3.Session, bucket: str, folder_path: str
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Upload all files under folder_path, preserving relative paths as S3 keys.
+
+    Returns (succeeded_keys, [(failed_path, error_message), ...]).
+    """
+    s3 = session.client("s3")
+    succeeded: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for dirpath, _, filenames in os.walk(folder_path):
+        for filename in filenames:
+            abs_path = os.path.join(dirpath, filename)
+            rel_path = os.path.relpath(abs_path, os.path.dirname(folder_path))
+            key = rel_path.replace(os.sep, "/")
+            try:
+                s3.upload_file(abs_path, bucket, key)
+                succeeded.append(key)
+            except Exception as e:
+                failed.append((abs_path, str(e)))
+    return succeeded, failed

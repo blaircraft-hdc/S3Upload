@@ -97,7 +97,8 @@ class S3UploadApp(tk.Tk):
         # Action buttons
         btn_frame = ttk.Frame(main)
         btn_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        ttk.Button(btn_frame, text="Upload", command=self._on_upload).pack(side="left")
+        ttk.Button(btn_frame, text="Upload Files...", command=self._on_upload_files).pack(side="left")
+        ttk.Button(btn_frame, text="Upload Folder...", command=self._on_upload_folder).pack(side="left", padx=(6, 0))
         ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side="right")
 
     def _open_paste_dialog(self) -> None:
@@ -185,34 +186,75 @@ class S3UploadApp(tk.Tk):
         for obj in objects:
             self._table.insert("", "end", values=(obj["key"], _format_size(obj["size"])))
 
-    def _on_upload(self) -> None:
+    def _check_ready(self) -> bool:
         if not self._session:
             messagebox.showwarning("Not Connected", "Not connected to AWS.")
-            return
+            return False
         if not self._current_bucket:
             messagebox.showwarning("No Bucket Selected", "Please select a bucket first.")
+            return False
+        return True
+
+    def _on_upload_files(self) -> None:
+        if not self._check_ready():
             return
-        path = filedialog.askopenfilename(title="Select file to upload")
-        if path:
+        paths = filedialog.askopenfilenames(title="Select files to upload")
+        if paths:
             threading.Thread(
-                target=self._upload_file, args=(path, self._current_bucket), daemon=True
+                target=self._upload_files, args=(list(paths), self._current_bucket), daemon=True
             ).start()
 
-    def _upload_file(self, file_path: str, bucket: str) -> None:
+    def _on_upload_folder(self) -> None:
+        if not self._check_ready():
+            return
+        folder = filedialog.askdirectory(title="Select folder to upload")
+        if folder:
+            threading.Thread(
+                target=self._upload_folder_task, args=(folder, self._current_bucket), daemon=True
+            ).start()
+
+    def _upload_files(self, file_paths: list[str], bucket: str) -> None:
         from .s3 import upload_file
 
-        try:
-            upload_file(self._session, bucket, file_path)
-            name = os.path.basename(file_path)
-            self.after(0, messagebox.showinfo, "Success", f"Uploaded {name!r} successfully.")
-            self.after(
-                0,
-                lambda: threading.Thread(
-                    target=self._fetch_objects, args=(bucket,), daemon=True
-                ).start(),
-            )
-        except Exception as e:
-            self.after(0, messagebox.showerror, "Upload Failed", str(e))
+        failed: list[tuple[str, str]] = []
+        for path in file_paths:
+            try:
+                upload_file(self._session, bucket, path)  # type: ignore[arg-type]
+            except Exception as e:
+                failed.append((os.path.basename(path), str(e)))
+
+        succeeded = len(file_paths) - len(failed)
+
+        def _done() -> None:
+            if failed:
+                errors = "\n".join(f"{n}: {e}" for n, e in failed)
+                messagebox.showwarning(
+                    "Upload Partial",
+                    f"Uploaded {succeeded} of {len(file_paths)} file(s).\n\nFailed:\n{errors}",
+                )
+            else:
+                messagebox.showinfo("Success", f"Uploaded {succeeded} file(s) successfully.")
+            threading.Thread(target=self._fetch_objects, args=(bucket,), daemon=True).start()
+
+        self.after(0, _done)
+
+    def _upload_folder_task(self, folder_path: str, bucket: str) -> None:
+        from .s3 import upload_folder
+
+        succeeded, failed = upload_folder(self._session, bucket, folder_path)  # type: ignore[arg-type]
+
+        def _done() -> None:
+            if failed:
+                errors = "\n".join(f"{os.path.basename(p)}: {e}" for p, e in failed)
+                messagebox.showwarning(
+                    "Upload Partial",
+                    f"Uploaded {len(succeeded)} file(s).\n\nFailed:\n{errors}",
+                )
+            else:
+                messagebox.showinfo("Success", f"Uploaded {len(succeeded)} file(s) successfully.")
+            threading.Thread(target=self._fetch_objects, args=(bucket,), daemon=True).start()
+
+        self.after(0, _done)
 
 
 def _parse_credentials(text: str) -> dict[str, str]:
