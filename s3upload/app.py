@@ -11,7 +11,12 @@ import boto3
 
 
 class S3UploadApp(tk.Tk):
-    def __init__(self, profile: Optional[str] = None, region: str = "ca-central-1") -> None:
+    def __init__(
+        self,
+        profile: Optional[str] = None,
+        region: str = "ca-central-1",
+        bucket: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self.title("S3Upload")
         self.minsize(600, 480)
@@ -20,6 +25,7 @@ class S3UploadApp(tk.Tk):
 
         self._session: Optional[boto3.Session] = None
         self._current_bucket: Optional[str] = None
+        self._initial_bucket: Optional[str] = bucket
         self._pasted_access_key: Optional[str] = None
         self._pasted_secret_key: Optional[str] = None
         self._pasted_session_token: Optional[str] = None
@@ -163,6 +169,9 @@ class S3UploadApp(tk.Tk):
 
     def _update_bucket_combo(self, buckets: list[str]) -> None:
         self._bucket_combo["values"] = buckets
+        if self._initial_bucket and self._initial_bucket in buckets:
+            self._bucket_var.set(self._initial_bucket)
+            self._on_bucket_selected()
 
     def _on_bucket_selected(self, event: object = None) -> None:
         bucket = self._bucket_var.get()
