@@ -2,6 +2,8 @@
 
 A GUI for browsing and uploading files to AWS S3.
 
+<img width="600" height="512" alt="image" src="https://github.com/user-attachments/assets/cd857ab7-a435-4c8c-837f-83bd30b600ef" />
+
 ## Features
 
 - Browse S3 buckets and navigate folders
