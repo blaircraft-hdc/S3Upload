@@ -1,4 +1,5 @@
 import os
+import tempfile
 from typing import Optional
 
 import boto3
@@ -51,6 +52,41 @@ def list_objects(session: boto3.Session, bucket: str) -> list[dict]:
     return objects
 
 
+def list_objects_at_prefix(
+    session: boto3.Session, bucket: str, prefix: str
+) -> tuple[list[str], list[dict]]:
+    """List folders and files directly under prefix (one level deep).
+
+    Returns (folder_prefixes, [{"key": ..., "size": ...}, ...]).
+    """
+    s3 = session.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    folders: list[str] = []
+    files: list[dict] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes") or []:
+            folders.append(cp["Prefix"])
+        for obj in page.get("Contents") or []:
+            if obj["Key"] != prefix:
+                files.append({"key": obj["Key"], "size": obj["Size"]})
+    return folders, files
+
+
+def delete_object(session: boto3.Session, bucket: str, key: str) -> None:
+    s3 = session.client("s3")
+    s3.delete_object(Bucket=bucket, Key=key)
+
+
+def download_file(session: boto3.Session, bucket: str, key: str) -> str:
+    """Download key from bucket to a temp file and return its local path."""
+    s3 = session.client("s3")
+    suffix = os.path.splitext(key)[1]
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    s3.download_file(bucket, key, path)
+    return path
+
+
 def upload_file(
     session: boto3.Session, bucket: str, file_path: str, key: Optional[str] = None
 ) -> None:
@@ -61,11 +97,12 @@ def upload_file(
 
 
 def upload_folder(
-    session: boto3.Session, bucket: str, folder_path: str
+    session: boto3.Session, bucket: str, folder_path: str, key_prefix: str = ""
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Upload all files under folder_path, preserving relative paths as S3 keys.
 
-    Returns (succeeded_keys, [(failed_path, error_message), ...]).
+    key_prefix is prepended to every key (use the current bucket prefix to upload
+    into a subfolder). Returns (succeeded_keys, [(failed_path, error_message), ...]).
     """
     s3 = session.client("s3")
     succeeded: list[str] = []
@@ -74,7 +111,7 @@ def upload_folder(
         for filename in filenames:
             abs_path = os.path.join(dirpath, filename)
             rel_path = os.path.relpath(abs_path, os.path.dirname(folder_path))
-            key = rel_path.replace(os.sep, "/")
+            key = key_prefix + rel_path.replace(os.sep, "/")
             try:
                 s3.upload_file(abs_path, bucket, key)
                 succeeded.append(key)
